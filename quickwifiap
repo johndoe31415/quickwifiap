@@ -1,0 +1,111 @@
+#!/usr/bin/python3
+#	quickwifiap - Quickly configure a WiFi AP with DHCP, DNS and IP masquerading
+#	Copyright (C) 2019-2019 Johannes Bauer
+#
+#	This file is part of quickwifiap.
+#
+#	quickwifiap is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	quickwifiap is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import sys
+import json
+import subprocess
+import tempfile
+import os
+from FriendlyArgumentParser import FriendlyArgumentParser
+from NetSpecification import NetSpecification
+
+os.umask(0o0077)
+parser = FriendlyArgumentParser(description = "Quick Wifi AP configuration.")
+parser.add_argument("-v", "--verbose", action = "count", default = 0, help = "Increases verbosity. Can be specified multiple times to increase.")
+parser.add_argument("config_file", metavar = "config_file", type = str, help = "JSON file that specifies the network configuration to use")
+args = parser.parse_args(sys.argv[1:])
+
+with open(args.config_file) as f:
+	config = json.load(f)
+
+network = NetSpecification.parse(config["network"])
+my_ip = network.ip_offset(1)
+if args.verbose >= 1:
+	print("Serving WiFi on %s on network %s, local server IP %s" % (config["interface"], network, my_ip))
+
+
+# Bring the local interface up first
+subprocess.check_call([ "ifconfig", config["interface"], "up", my_ip.ipstr, "netmask", network.subnetstr ])
+
+procs = { }
+configs = { }
+
+try:
+	# Start the DHCP server and DNS
+	configs["dnsmasq"] = tempfile.NamedTemporaryFile("w", prefix = "dnsmasq_", suffix = ".conf")
+	print("listen-address=%s" % (my_ip), file = configs["dnsmasq"])
+	print("bind-interfaces", file = configs["dnsmasq"])
+	print("dhcp-range=%s,%s,12h" % (network.ip_offset(2), network.last_addr), file = configs["dnsmasq"])
+	print("dhcp-authoritative", file = configs["dnsmasq"])
+	configs["dnsmasq"].flush()
+
+	if args.verbose >= 2:
+		print("dnsmasq config: %s" % (configs["dnsmasq"].name))
+
+	foreground_option = "-k" if (args.verbose == 0) else "-d"
+	procs["dnsmasq"] = subprocess.Popen([ "dnsmasq", foreground_option, "-C", configs["dnsmasq"].name ])
+
+	# Start the hostapd server
+	configs["hostapd"] = tempfile.NamedTemporaryFile("w", prefix = "hostapd_", suffix = ".conf")
+	print("interface=%s" % (config["interface"]), file = configs["hostapd"])
+	print("channel=6", file = configs["hostapd"])
+	print("hw_mode=g", file = configs["hostapd"])
+	print("beacon_int=100", file = configs["hostapd"])
+	print("max_num_sta=255", file = configs["hostapd"])
+	print("country_code=DE", file = configs["hostapd"])
+	print(file = configs["hostapd"])
+	print("ssid=%s" % (config["essid"]), file = configs["hostapd"])
+	security = config["security"]["mode"].lower()
+	if security == "wpa2-psk":
+		print("wpa=2", file = configs["hostapd"])
+		print("wpa_key_mgmt=WPA-PSK", file = configs["hostapd"])
+		print("wpa_pairwise=CCMP", file = configs["hostapd"])
+		print("wpa_passphrase=%s" % (config["security"]["psk"]), file = configs["hostapd"])
+		print("auth_algs=1", file = configs["hostapd"])
+	else:
+		raise NotImplementedError(security)
+	configs["hostapd"].flush()
+
+	if args.verbose >= 2:
+		print("hostapd config: %s" % (configs["hostapd"].name))
+
+	cmd = [ "hostapd" ]
+	if args.verbose >= 2:
+		cmd.append("-d")
+	cmd.append(configs["hostapd"].name)
+	procs["hostapd"] = subprocess.Popen(cmd)
+
+	if "nat_ext_interface" in config:
+		# Finally enable NAT
+		if args.verbose >= 1:
+			print("Enabled NAT, outgoing traffic through %s" % (config["nat_ext_interface"]))
+		with open("/proc/sys/net/ipv4/ip_forward", "w") as f:
+			print("1", file = f)
+		subprocess.check_call([ "iptables", "-t", "nat", "-A", "POSTROUTING", "-o", config["nat_ext_interface"], "-j", "MASQUERADE" ])
+
+	input("Press enter to quit everything...")
+finally:
+	for (name, proc) in procs.items():
+		print("Killing %s..." % (name))
+		proc.kill()
+	for (name, config) in configs.items():
+		config.close()
+
