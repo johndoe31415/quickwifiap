@@ -33,14 +33,14 @@ The configuration JSON file is fairly self-explanatory:
 
 ```json
 {
-	"interface":			"wlan0",
-	"essid":				"Free Wifi",
-	"network":				"172.16.42.0/24",
-	"nat_ext_interface":	"eth0",
-	"security": {
-		"mode":		"wpa2-psk",
-		"psk":		"foobar123"
-	}
+    "interface":            "wlan0",
+    "essid":                "Free Wifi",
+    "network":              "172.16.42.0/24",
+    "nat_ext_interface":    "eth0",
+    "security": {
+        "mode":     "wpa2-psk",
+        "psk":      "foobar123"
+    }
 }
 ```
 
