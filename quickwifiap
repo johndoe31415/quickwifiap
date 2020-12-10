@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 #	quickwifiap - Quickly configure a WiFi AP with DHCP, DNS and IP masquerading
-#	Copyright (C) 2019-2019 Johannes Bauer
+#	Copyright (C) 2019-2020 Johannes Bauer
 #
 #	This file is part of quickwifiap.
 #
@@ -26,6 +26,7 @@ import tempfile
 import os
 from FriendlyArgumentParser import FriendlyArgumentParser
 from NetSpecification import NetSpecification
+from RFKill import RFKill
 
 os.umask(0o0077)
 parser = FriendlyArgumentParser(description = "Quick Wifi AP configuration.")
@@ -41,6 +42,9 @@ my_ip = network.ip_offset(1)
 if args.verbose >= 1:
 	print("Serving WiFi on %s on network %s, local server IP %s" % (config["interface"], network, my_ip))
 
+# Disable RFKILL if enabled
+rfkill = RFKill()
+rfkill.unblock(config["interface"])
 
 # Bring the local interface up first
 subprocess.check_call([ "ifconfig", config["interface"], "up", my_ip.ipstr, "netmask", network.subnetstr ])
@@ -66,6 +70,7 @@ try:
 	# Start the hostapd server
 	configs["hostapd"] = tempfile.NamedTemporaryFile("w", prefix = "hostapd_", suffix = ".conf")
 	print("interface=%s" % (config["interface"]), file = configs["hostapd"])
+	print("driver=%s" % (config.get("driver", "nl80211")), file = configs["hostapd"])
 	print("channel=6", file = configs["hostapd"])
 	print("hw_mode=g", file = configs["hostapd"])
 	print("beacon_int=100", file = configs["hostapd"])
